@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  NEXUS OS — Master Build Script (Fixed)
+#  NEXUS OS — Slim Build Script (Target: ~500MB ISO)
 #  Usage: sudo ./makebuild.sh [--clean] [--no-squash] [--output DIR]
 # ============================================================
 set -e
@@ -28,7 +28,7 @@ ROOTFS="$SCRIPT_DIR/rootfs"
 ISO_DIR="$SCRIPT_DIR/iso"
 OUTPUT_ISO="$OUTPUT_DIR/nexus.iso"
 
-log "Nexus OS Build System v1.1 (Fixed)"
+log "Nexus OS Slim Build — Target: ~500MB ISO"
 log "Output: $OUTPUT_ISO"
 
 # ── Step 1: Clean ──────────────────────────────────────────
@@ -39,7 +39,7 @@ fi
 
 # ── Step 2: Bootstrap ─────────────────────────────────────
 if [[ ! -d "$ROOTFS/bin" ]]; then
-  log "Bootstrapping Ubuntu 24.04 Noble..."
+  log "Bootstrapping Ubuntu 24.04 Noble (minbase)..."
   debootstrap --arch=amd64 --variant=minbase noble "$ROOTFS" \
     http://archive.ubuntu.com/ubuntu/ 2>&1 | grep -E "^[EW]:" || true
   ok "Bootstrap done"
@@ -54,52 +54,103 @@ deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe
 deb http://security.ubuntu.com/ubuntu noble-security main restricted universe
 SOURCES
 
-# ── Step 4: Mount virtual filesystems ─────────────────────
+# ── Step 4: Mount ─────────────────────────────────────────
 mountpoint -q "$ROOTFS/proc" || mount --bind /proc "$ROOTFS/proc"
 mountpoint -q "$ROOTFS/sys"  || mount --bind /sys  "$ROOTFS/sys"
 mountpoint -q "$ROOTFS/dev"  || mount --bind /dev  "$ROOTFS/dev"
 trap "umount '$ROOTFS/proc' '$ROOTFS/sys' '$ROOTFS/dev' 2>/dev/null; true" EXIT
 
-# ── Step 5: Install packages + LIVE-BOOT (critical fix) ───
-log "Installing packages (including live-boot)..."
+# ── Step 5: Install packages — SLIM selection ──────────────
+log "Installing slim package set..."
 chroot "$ROOTFS" /bin/bash -c "
   apt-get update -qq
 
-  # CRITICAL: live-boot makes squashfs mount as root on boot
+  # Size reduction 1: linux-image-virtual (no extra hardware modules)
+  # Instead of linux-image-generic (600MB) → linux-image-virtual (~200MB)
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    linux-image-generic \
+    linux-image-virtual \
     initramfs-tools \
     live-boot \
     live-boot-initramfs-tools \
-    live-config \
-    live-config-systemd \
-    python3 python3-pip python3-requests \
-    bash coreutils systemd systemd-sysv \
-    util-linux procps psmisc htop \
-    iproute2 iputils-ping net-tools \
-    vim nano curl wget \
-    ca-certificates locales \
-    2>&1 | grep -E '^(Setting up|Removing|E:)' | head -30
+    python3 \
+    python3-requests \
+    bash \
+    coreutils \
+    systemd \
+    systemd-sysv \
+    util-linux \
+    procps \
+    iproute2 \
+    iputils-ping \
+    nano \
+    curl \
+    ca-certificates \
+    2>&1 | grep -E '^(Setting up|E:)' | head -30
 
   echo root:nexus | chpasswd
-  echo '[NEXUS] Base packages installed'
+
+  # Size reduction 2: Remove ALL unnecessary files after install
+  echo '[NEXUS] Cleaning up to reduce size...'
+
+  # Remove apt cache (biggest win: ~200MB)
+  apt-get clean
+  apt-get autoremove -y --purge 2>/dev/null || true
+  rm -rf /var/lib/apt/lists/*
+  rm -rf /var/cache/apt/archives/*.deb
+  rm -rf /var/cache/apt/archives/partial/
+
+  # Remove kernel build artifacts (not needed in live ISO)
+  rm -rf /usr/src/linux-headers-*
+  rm -rf /usr/share/doc/*
+  rm -rf /usr/share/man/*
+  rm -rf /usr/share/locale/*
+  rm -rf /usr/share/info/*
+  rm -rf /var/log/*.log /var/log/*.gz
+
+  # Remove unused kernel modules (saves 200-400MB)
+  KVER=\$(ls /boot/vmlinuz-* | head -1 | sed 's/.*vmlinuz-//')
+  echo \"Removing unused kernel modules for \$KVER...\"
+
+  # Keep only essential modules, remove huge driver collections
+  cd /lib/modules/\$KVER/kernel
+  rm -rf drivers/media      2>/dev/null || true
+  rm -rf drivers/staging    2>/dev/null || true
+  rm -rf drivers/gpu/drm    2>/dev/null || true
+  rm -rf drivers/bluetooth  2>/dev/null || true
+  rm -rf drivers/infiniband 2>/dev/null || true
+  rm -rf drivers/isdn       2>/dev/null || true
+  rm -rf drivers/atm        2>/dev/null || true
+  rm -rf drivers/nfc        2>/dev/null || true
+  rm -rf drivers/iio        2>/dev/null || true
+  rm -rf sound              2>/dev/null || true
+  cd /
+
+  # Rebuild module deps after removal
+  depmod -a \$KVER 2>/dev/null || true
+
+  echo '[NEXUS] Cleanup done.'
 "
 
-# ── Step 6: Custom packages from packages.list ────────────
+ok "Package install and cleanup done"
+
+# ── Step 6: Custom packages ────────────────────────────────
 if [[ -f "$SCRIPT_DIR/customize/packages.list" ]]; then
   PKGS=$(grep -v '^\s*#' "$SCRIPT_DIR/customize/packages.list" | grep -v '^\s*$' | tr '\n' ' ')
   if [[ -n "$PKGS" ]]; then
     log "Installing custom packages: $PKGS"
+    mountpoint -q "$ROOTFS/proc" || mount --bind /proc "$ROOTFS/proc"
+    mountpoint -q "$ROOTFS/sys"  || mount --bind /sys  "$ROOTFS/sys"
+    mountpoint -q "$ROOTFS/dev"  || mount --bind /dev  "$ROOTFS/dev"
     chroot "$ROOTFS" /bin/bash -c "
+      apt-get update -qq
       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $PKGS \
         2>&1 | grep -E '^(Setting up|E:)' || true
+      apt-get clean && rm -rf /var/lib/apt/lists/*
     "
   fi
 fi
 
-ok "All packages installed"
-
-# ── Step 7: Install Nexus AI Agent ────────────────────────
+# ── Step 7: Nexus AI Agent ────────────────────────────────
 log "Installing Nexus AI Agent..."
 mkdir -p "$ROOTFS/etc/nexus"
 cp "$SCRIPT_DIR/nexus-agent.py" "$ROOTFS/usr/local/bin/nexus-agent.py"
@@ -133,8 +184,7 @@ NEXUS_AGENT="claude-sonnet-4-6"
 BUILD_DATE=$(date +%Y-%m-%d)
 OSREL
 
-# ── Step 9: Auto-login & auto-launch ──────────────────────
-log "Configuring auto-login..."
+# Auto-login
 mkdir -p "$ROOTFS/etc/systemd/system/getty@tty1.service.d"
 cat > "$ROOTFS/etc/systemd/system/getty@tty1.service.d/autologin.conf" << 'GETTY'
 [Service]
@@ -142,54 +192,39 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
 GETTY
 
-# Auto-launch nexus on tty1 login
 cat > "$ROOTFS/root/.bash_profile" << 'PROFILE'
 if [ "$(tty)" = "/dev/tty1" ]; then
   exec /usr/local/bin/nexus
 fi
 PROFILE
 
-# ── Step 10: Custom startup script ────────────────────────
-if [[ -f "$SCRIPT_DIR/customize/startup.sh" ]]; then
-  cp "$SCRIPT_DIR/customize/startup.sh" "$ROOTFS/etc/nexus/startup.sh"
+# Custom files
+[[ -f "$SCRIPT_DIR/customize/startup.sh" ]] && \
+  cp "$SCRIPT_DIR/customize/startup.sh" "$ROOTFS/etc/nexus/startup.sh" && \
   chmod +x "$ROOTFS/etc/nexus/startup.sh"
-fi
 
-# MOTD
-if [[ -f "$SCRIPT_DIR/customize/motd.txt" ]]; then
-  cp "$SCRIPT_DIR/customize/motd.txt" "$ROOTFS/etc/motd"
-else
+[[ -f "$SCRIPT_DIR/customize/motd.txt" ]] && \
+  cp "$SCRIPT_DIR/customize/motd.txt" "$ROOTFS/etc/motd" || \
   cat > "$ROOTFS/etc/motd" << 'MOTD'
 
   ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗  ██████╗ ███████╗
-  ████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝ ██╔═══██╗██╔════╝
   ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗ ██║   ██║███████╗
-  ██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║ ██║   ██║╚════██║
   ██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║ ╚██████╔╝███████║
-  ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝  ╚═════╝ ╚══════╝
 
-  Nexus OS 1.0 — Agentic AI Linux  |  Type 'nexus' to launch AI agent
+  Nexus OS 1.0 — Agentic AI Linux  |  'nexus' to launch AI agent
 
 MOTD
-fi
 
-# ── Step 11: CRITICAL — Rebuild initramfs with live-boot ──
-log "Rebuilding initramfs with live-boot support..."
-chroot "$ROOTFS" /bin/bash -c "
-  update-initramfs -u -k all 2>&1 | tail -5
-  echo 'Initramfs rebuilt.'
-"
-ok "Initramfs rebuilt"
+# ── Step 9: Rebuild initramfs ─────────────────────────────
+log "Rebuilding initramfs with live-boot..."
+chroot "$ROOTFS" update-initramfs -u -k all 2>&1 | tail -3
 
-# ── Step 12: Unmount ──────────────────────────────────────
 umount "$ROOTFS/proc" "$ROOTFS/sys" "$ROOTFS/dev" 2>/dev/null || true
 trap - EXIT
 
-# ── Step 13: ISO directory structure ─────────────────────
+# ── Step 10: ISO structure ────────────────────────────────
 log "Building ISO structure..."
-mkdir -p "$ISO_DIR/boot/grub"
-mkdir -p "$ISO_DIR/EFI/boot"
-mkdir -p "$ISO_DIR/live"       # live-boot looks here for filesystem.squashfs
+mkdir -p "$ISO_DIR/boot/grub" "$ISO_DIR/EFI/boot" "$ISO_DIR/live"
 
 KVER=$(ls "$ROOTFS/boot/vmlinuz-"* 2>/dev/null | sort -V | tail -1 | sed 's/.*vmlinuz-//')
 [[ -z "$KVER" ]] && die "No kernel found in $ROOTFS/boot/"
@@ -199,11 +234,13 @@ cp "$ROOTFS/boot/vmlinuz-${KVER}"    "$ISO_DIR/boot/vmlinuz"
 cp "$ROOTFS/boot/initrd.img-${KVER}" "$ISO_DIR/boot/initrd.img"
 cp "$SCRIPT_DIR/boot/grub/grub.cfg"  "$ISO_DIR/boot/grub/grub.cfg"
 
-# ── Step 14: Squashfs ─────────────────────────────────────
+# ── Step 11: Squashfs — Size reduction 3: XZ compression ──
 if ! $NO_SQUASH; then
-  log "Creating squashfs (this takes ~20 minutes)..."
+  log "Creating squashfs with XZ compression (better ratio, slower)..."
   mksquashfs "$ROOTFS" "$ISO_DIR/live/filesystem.squashfs" \
-    -comp zstd -Xcompression-level 3 \
+    -comp xz \
+    -Xbcj x86 \
+    -b 1M \
     -e boot \
     -noappend \
     2>&1 | tail -3
@@ -212,17 +249,15 @@ else
   warn "Skipping squashfs (--no-squash)"
 fi
 
-# ── Step 15: GRUB bootloaders ────────────────────────────
+# ── Step 12: GRUB bootloaders ────────────────────────────
 log "Building GRUB bootloaders..."
 
-# EFI bootloader
 grub-mkstandalone \
   --format=x86_64-efi \
   --output="$ISO_DIR/EFI/boot/bootx64.efi" \
   --locales="" --fonts="" \
   "boot/grub/grub.cfg=$ISO_DIR/boot/grub/grub.cfg"
 
-# BIOS bootloader
 grub-mkstandalone \
   --format=i386-pc \
   --output="$SCRIPT_DIR/core.img" \
@@ -233,18 +268,16 @@ grub-mkstandalone \
 
 cat /usr/lib/grub/i386-pc/cdboot.img "$SCRIPT_DIR/core.img" > "$SCRIPT_DIR/bios.img"
 
-# EFI FAT image
 dd if=/dev/zero of="$SCRIPT_DIR/efiboot.img" bs=1M count=4 status=none
 mkfs.fat -F12 "$SCRIPT_DIR/efiboot.img"
 mmd   -i "$SCRIPT_DIR/efiboot.img" ::/EFI ::/EFI/boot
 mcopy -i "$SCRIPT_DIR/efiboot.img" "$ISO_DIR/EFI/boot/bootx64.efi" ::/EFI/boot/
 
-# Copy into ISO dir
 cp "$SCRIPT_DIR/bios.img"    "$ISO_DIR/bios.img"
 cp "$SCRIPT_DIR/efiboot.img" "$ISO_DIR/efiboot.img"
 ok "Bootloaders ready"
 
-# ── Step 16: Build ISO ───────────────────────────────────
+# ── Step 13: Build ISO ───────────────────────────────────
 log "Building nexus.iso..."
 xorriso -as mkisofs \
   -iso-level 3 \
