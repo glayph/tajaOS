@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  NEXUS OS — Build Script v4 (stable)
+#  NEXUS OS — Build Script v2 (grub-mkrescue fix)
 #  Usage: sudo ./makebuild.sh [--clean] [--no-squash] [--output DIR]
 # ============================================================
 set -e
@@ -17,33 +17,31 @@ for arg in "$@"; do
     --clean)     CLEAN=true ;;
     --no-squash) NO_SQUASH=true ;;
     --output)    OUTPUT_DIR="$2"; shift ;;
-    --help)      echo "Usage: sudo ./makebuild.sh [--clean] [--no-squash] [--output DIR]"; exit 0 ;;
+    --help)
+      echo "Usage: sudo ./makebuild.sh [--clean] [--no-squash] [--output DIR]"
+      exit 0 ;;
   esac
 done
 
 [[ $EUID -ne 0 ]] && die "Run as root: sudo ./makebuild.sh"
 
-for tool in debootstrap xorriso mksquashfs grub-mkstandalone mkfs.fat mmd mcopy; do
-  command -v $tool &>/dev/null || die "Missing: $tool — run: sudo bash install-deps.sh"
-done
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOTFS="$SCRIPT_DIR/rootfs"
 ISO_DIR="$SCRIPT_DIR/iso"
 OUTPUT_ISO="$OUTPUT_DIR/nexus.iso"
-WORK_DIR="$SCRIPT_DIR"
 
-log "Nexus OS Build v4 | Output: $OUTPUT_ISO"
+log "Nexus OS Build v2 — grub-mkrescue edition"
+log "Output: $OUTPUT_ISO"
 
-# ── Clean ─────────────────────────────────────────────────
+# ── Step 1: Clean ──────────────────────────────────────────
 if $CLEAN; then
-  warn "Clean build — removing rootfs and ISO..."
-  rm -rf "$ROOTFS" "$ISO_DIR" "$WORK_DIR/core.img" "$WORK_DIR/efiboot.img" "$WORK_DIR/bootx64.efi"
+  warn "Removing existing rootfs and ISO..."
+  rm -rf "$ROOTFS" "$ISO_DIR"
 fi
 
-# ── Bootstrap ─────────────────────────────────────────────
+# ── Step 2: Bootstrap ─────────────────────────────────────
 if [[ ! -d "$ROOTFS/bin" ]]; then
-  log "Bootstrapping Ubuntu 24.04 Noble..."
+  log "Bootstrapping Ubuntu 24.04 Noble (minbase)..."
   debootstrap --arch=amd64 --variant=minbase noble "$ROOTFS" \
     http://archive.ubuntu.com/ubuntu/ 2>&1 | grep -E "^[EW]:" || true
   ok "Bootstrap done"
@@ -51,179 +49,220 @@ else
   warn "Rootfs exists — skipping (use --clean to rebuild)"
 fi
 
-# ── apt sources ───────────────────────────────────────────
-cat > "$ROOTFS/etc/apt/sources.list" << 'SRC'
+# ── Step 3: apt sources ───────────────────────────────────
+cat > "$ROOTFS/etc/apt/sources.list" << 'SOURCES'
 deb http://archive.ubuntu.com/ubuntu noble main restricted universe
 deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe
 deb http://security.ubuntu.com/ubuntu noble-security main restricted universe
-SRC
+SOURCES
 
-# ── Mount ─────────────────────────────────────────────────
+# ── Step 4: Mount virtual filesystems ─────────────────────
 mountpoint -q "$ROOTFS/proc" || mount --bind /proc "$ROOTFS/proc"
 mountpoint -q "$ROOTFS/sys"  || mount --bind /sys  "$ROOTFS/sys"
 mountpoint -q "$ROOTFS/dev"  || mount --bind /dev  "$ROOTFS/dev"
 trap "umount '$ROOTFS/proc' '$ROOTFS/sys' '$ROOTFS/dev' 2>/dev/null; true" EXIT
 
-# ── Packages ──────────────────────────────────────────────
+# ── Step 5: Install packages ───────────────────────────────
 log "Installing packages..."
-chroot "$ROOTFS" /bin/bash << 'CHROOT'
-set -e
-apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  linux-image-virtual initramfs-tools \
-  live-boot live-boot-initramfs-tools live-config live-config-systemd \
-  python3 python3-requests \
-  bash coreutils systemd systemd-sysv util-linux procps \
-  iproute2 iputils-ping nano curl ca-certificates
-echo root:nexus | chpasswd
-apt-get clean
-apt-get autoremove -y --purge 2>/dev/null || true
-rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
-rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/locale/*
-rm -rf /var/log/*.log /var/log/*.gz
-KVER=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 | sed 's/.*vmlinuz-//')
-if [[ -n "$KVER" && -d "/lib/modules/$KVER/kernel" ]]; then
-  cd "/lib/modules/$KVER/kernel"
-  rm -rf drivers/media drivers/staging drivers/gpu/drm \
-         drivers/bluetooth drivers/infiniband sound 2>/dev/null || true
-  depmod -a "$KVER" 2>/dev/null || true
-fi
-echo "[NEXUS] packages done"
-CHROOT
-ok "Packages installed"
+chroot "$ROOTFS" /bin/bash -c "
+  apt-get update -qq
 
-# ── Custom packages ────────────────────────────────────────
+  # linux-image-virtual = smaller kernel, fewer unnecessary modules
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    linux-image-virtual \
+    initramfs-tools \
+    live-boot \
+    live-boot-initramfs-tools \
+    live-config \
+    live-config-systemd \
+    python3 \
+    python3-requests \
+    bash \
+    coreutils \
+    systemd \
+    systemd-sysv \
+    util-linux \
+    procps \
+    iproute2 \
+    iputils-ping \
+    nano \
+    curl \
+    ca-certificates \
+    2>&1 | grep -E '^(Setting up|E:)' | head -30
+
+  echo root:nexus | chpasswd
+
+  # Clean to save space
+  apt-get clean
+  apt-get autoremove -y --purge 2>/dev/null || true
+  rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
+  rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/locale/*
+  rm -rf /var/log/*.log /var/log/*.gz
+
+  # Remove unused kernel modules (saves ~200MB)
+  KVER=\$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 | sed 's/.*vmlinuz-//')
+  if [[ -n \"\$KVER\" ]]; then
+    cd /lib/modules/\$KVER/kernel
+    rm -rf drivers/media drivers/staging drivers/gpu/drm \
+           drivers/bluetooth drivers/infiniband \
+           drivers/isdn drivers/atm drivers/nfc \
+           sound 2>/dev/null || true
+    depmod -a \$KVER 2>/dev/null || true
+  fi
+  echo '[NEXUS] Packages installed and cleaned'
+"
+ok "Packages done"
+
+# ── Step 6: Custom packages ────────────────────────────────
 if [[ -f "$SCRIPT_DIR/customize/packages.list" ]]; then
-  PKGS=$(grep -v '^\s*#' "$SCRIPT_DIR/customize/packages.list" | grep -v '^\s*$' | tr '\n' ' ')
+  PKGS=$(grep -v '^\s*#' "$SCRIPT_DIR/customize/packages.list" \
+       | grep -v '^\s*$' | tr '\n' ' ')
   if [[ -n "$PKGS" ]]; then
-    log "Custom packages: $PKGS"
+    log "Installing custom packages: $PKGS"
     chroot "$ROOTFS" /bin/bash -c "
       apt-get update -qq
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $PKGS 2>&1 | grep -E '^(Setting up|E:)' || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $PKGS \
+        2>&1 | grep -E '^(Setting up|E:)' || true
       apt-get clean && rm -rf /var/lib/apt/lists/*
     "
   fi
 fi
 
-# ── Nexus AI Agent ────────────────────────────────────────
+# ── Step 7: Nexus AI Agent ────────────────────────────────
 log "Installing Nexus AI Agent..."
 mkdir -p "$ROOTFS/etc/nexus"
 cp "$SCRIPT_DIR/nexus-agent.py" "$ROOTFS/usr/local/bin/nexus-agent.py"
 chmod +x "$ROOTFS/usr/local/bin/nexus-agent.py"
-printf '#!/bin/bash\nexport TERM=linux PYTHONUNBUFFERED=1\n[ -f /etc/nexus/api.key ] && export ANTHROPIC_API_KEY=$(cat /etc/nexus/api.key)\nexec /usr/local/bin/nexus-agent.py\n' \
-  > "$ROOTFS/usr/local/bin/nexus"
+
+cat > "$ROOTFS/usr/local/bin/nexus" << 'LAUNCHER'
+#!/bin/bash
+export TERM=linux
+export PYTHONUNBUFFERED=1
+[ -f /etc/nexus/api.key ] && export ANTHROPIC_API_KEY=$(cat /etc/nexus/api.key)
+exec /usr/local/bin/nexus-agent.py
+LAUNCHER
 chmod +x "$ROOTFS/usr/local/bin/nexus"
 
-# ── System config ──────────────────────────────────────────
-log "Configuring system..."
+# ── Step 8: System identity ───────────────────────────────
+log "Configuring system identity..."
 echo "nexus" > "$ROOTFS/etc/hostname"
-printf '127.0.0.1\tlocalhost\n127.0.1.1\tnexus\n' > "$ROOTFS/etc/hosts"
-printf 'NAME="Nexus OS"\nVERSION="1.0"\nPRETTY_NAME="Nexus OS 1.0"\n' > "$ROOTFS/etc/os-release"
+cat > "$ROOTFS/etc/hosts" << 'HOSTS'
+127.0.0.1   localhost
+127.0.1.1   nexus
+::1         localhost ip6-localhost ip6-loopback
+HOSTS
 
+cat > "$ROOTFS/etc/os-release" << OSREL
+NAME="Nexus OS"
+VERSION="1.0"
+ID=nexus
+ID_LIKE=ubuntu
+PRETTY_NAME="Nexus OS 1.0 — Agentic AI Linux"
+NEXUS_AGENT="claude-sonnet-4-6"
+BUILD_DATE=$(date +%Y-%m-%d)
+OSREL
+
+# Auto-login on tty1
 mkdir -p "$ROOTFS/etc/systemd/system/getty@tty1.service.d"
-printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear %%I $TERM\n' \
-  > "$ROOTFS/etc/systemd/system/getty@tty1.service.d/autologin.conf"
+cat > "$ROOTFS/etc/systemd/system/getty@tty1.service.d/autologin.conf" << 'GETTY'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
+GETTY
 
-printf 'if [ "$(tty)" = "/dev/tty1" ]; then exec /usr/local/bin/nexus; fi\n' \
-  > "$ROOTFS/root/.bash_profile"
+# Auto-launch nexus agent
+cat > "$ROOTFS/root/.bash_profile" << 'PROFILE'
+if [ "$(tty)" = "/dev/tty1" ]; then
+  exec /usr/local/bin/nexus
+fi
+PROFILE
 
+# Custom files
 [[ -f "$SCRIPT_DIR/customize/startup.sh" ]] && \
   cp "$SCRIPT_DIR/customize/startup.sh" "$ROOTFS/etc/nexus/startup.sh" && \
   chmod +x "$ROOTFS/etc/nexus/startup.sh"
 
-[[ -f "$SCRIPT_DIR/customize/motd.txt" ]] && \
+[[ -f "$SCRIPT_DIR/customize/agent-prompt.txt" ]] && \
+  cp "$SCRIPT_DIR/customize/agent-prompt.txt" "$ROOTFS/etc/nexus/agent-prompt.txt"
+
+# MOTD
+if [[ -f "$SCRIPT_DIR/customize/motd.txt" ]]; then
   cp "$SCRIPT_DIR/customize/motd.txt" "$ROOTFS/etc/motd"
+else
+  cat > "$ROOTFS/etc/motd" << 'MOTD'
 
-# ── Rebuild initramfs ─────────────────────────────────────
-log "Rebuilding initramfs with live-boot..."
+  ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗  ██████╗ ███████╗
+  ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗ ██║   ██║███████╗
+  ██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║ ╚██████╔╝███████║
+
+  Nexus OS 1.0 — Agentic AI Linux  |  Type 'nexus' to launch AI
+
+MOTD
+fi
+
+# ── Step 9: Rebuild initramfs with live-boot ──────────────
+log "Rebuilding initramfs..."
 chroot "$ROOTFS" update-initramfs -u -k all 2>&1 | tail -3
+ok "Initramfs rebuilt"
 
+# Unmount
 umount "$ROOTFS/proc" "$ROOTFS/sys" "$ROOTFS/dev" 2>/dev/null || true
 trap - EXIT
-ok "Initramfs done"
 
-# ── ISO structure ─────────────────────────────────────────
-log "Creating ISO directory tree..."
-mkdir -p "$ISO_DIR/boot/grub" "$ISO_DIR/live" "$ISO_DIR/EFI/boot"
+# ── Step 10: ISO directory structure ─────────────────────
+log "Creating ISO structure..."
+mkdir -p "$ISO_DIR/boot/grub"
+mkdir -p "$ISO_DIR/live"
 
-KVER=$(ls "$ROOTFS/boot/vmlinuz-"* 2>/dev/null | sort -V | tail -1 | sed 's/.*vmlinuz-//')
-[[ -z "$KVER" ]] && die "Kernel not found in rootfs/boot/"
-log "Kernel: $KVER"
+KVER=$(ls "$ROOTFS/boot/vmlinuz-"* 2>/dev/null | sort -V | tail -1 \
+       | sed 's/.*vmlinuz-//')
+[[ -z "$KVER" ]] && die "No kernel found in $ROOTFS/boot/"
+log "Kernel: linux-$KVER"
 
 cp "$ROOTFS/boot/vmlinuz-${KVER}"    "$ISO_DIR/boot/vmlinuz"
 cp "$ROOTFS/boot/initrd.img-${KVER}" "$ISO_DIR/boot/initrd.img"
 cp "$SCRIPT_DIR/boot/grub/grub.cfg"  "$ISO_DIR/boot/grub/grub.cfg"
 
-# ── KEY FIX: Copy GRUB module files into ISO ──────────────
-# Fixes: echo.mod / chain.mod / linux.mod not found errors
-log "Copying GRUB modules into ISO..."
-if [[ -d /usr/lib/grub/i386-pc ]]; then
-  mkdir -p "$ISO_DIR/boot/grub/i386-pc"
-  cp /usr/lib/grub/i386-pc/*.mod "$ISO_DIR/boot/grub/i386-pc/" 2>/dev/null || true
-  cp /usr/lib/grub/i386-pc/*.lst "$ISO_DIR/boot/grub/i386-pc/" 2>/dev/null || true
-  ok "i386-pc: $(ls $ISO_DIR/boot/grub/i386-pc/ | wc -l) files"
-fi
-if [[ -d /usr/lib/grub/x86_64-efi ]]; then
-  mkdir -p "$ISO_DIR/boot/grub/x86_64-efi"
-  cp /usr/lib/grub/x86_64-efi/*.mod "$ISO_DIR/boot/grub/x86_64-efi/" 2>/dev/null || true
-  cp /usr/lib/grub/x86_64-efi/*.lst "$ISO_DIR/boot/grub/x86_64-efi/" 2>/dev/null || true
-  ok "x86_64-efi: $(ls $ISO_DIR/boot/grub/x86_64-efi/ | wc -l) files"
-fi
-
-# ── Squashfs ──────────────────────────────────────────────
+# ── Step 11: Squashfs root filesystem ─────────────────────
 if ! $NO_SQUASH; then
-  log "Creating squashfs (XZ, ~30 min)..."
+  log "Creating squashfs (XZ, ~20-40 min)..."
   mksquashfs "$ROOTFS" "$ISO_DIR/live/filesystem.squashfs" \
-    -comp xz -Xbcj x86 -b 1M -e boot -noappend 2>&1 | tail -3
+    -comp xz \
+    -Xbcj x86 \
+    -b 1M \
+    -e boot \
+    -noappend \
+    2>&1 | tail -3
   ok "Squashfs: $(du -sh $ISO_DIR/live/filesystem.squashfs | cut -f1)"
 else
-  warn "Skipping squashfs (--no-squash)"
-  [[ ! -f "$ISO_DIR/live/filesystem.squashfs" ]] && die "No squashfs — run without --no-squash first"
+  warn "Skipping squashfs rebuild (--no-squash)"
+  [[ ! -f "$ISO_DIR/live/filesystem.squashfs" ]] && \
+    die "No squashfs found! Run without --no-squash first."
 fi
 
-# ── GRUB BIOS boot image ──────────────────────────────────
-log "GRUB BIOS bootloader..."
-grub-mkstandalone --format=i386-pc --output="$WORK_DIR/core.img" \
-  --install-modules="linux normal iso9660 biosdisk memdisk search search_label tar ls echo" \
-  --modules="linux normal iso9660 biosdisk search search_label echo" \
-  "boot/grub/grub.cfg=$ISO_DIR/boot/grub/grub.cfg"
-
-cat /usr/lib/grub/i386-pc/cdboot.img "$WORK_DIR/core.img" > "$ISO_DIR/bios.img"
-
-# ── GRUB EFI boot image ───────────────────────────────────
-log "GRUB EFI bootloader..."
-grub-mkstandalone --format=x86_64-efi --output="$WORK_DIR/bootx64.efi" \
-  --locales="" --fonts="" \
-  "boot/grub/grub.cfg=$ISO_DIR/boot/grub/grub.cfg"
-
-cp "$WORK_DIR/bootx64.efi" "$ISO_DIR/EFI/boot/bootx64.efi"
-dd if=/dev/zero of="$WORK_DIR/efiboot.img" bs=1M count=4 status=none
-mkfs.fat -F12 "$WORK_DIR/efiboot.img"
-mmd   -i "$WORK_DIR/efiboot.img" ::/EFI ::/EFI/boot
-mcopy -i "$WORK_DIR/efiboot.img" "$ISO_DIR/EFI/boot/bootx64.efi" ::/EFI/boot/
-cp "$WORK_DIR/efiboot.img" "$ISO_DIR/efiboot.img"
-
-# ── Build final ISO ───────────────────────────────────────
-log "Building nexus.iso with xorriso..."
-xorriso -as mkisofs \
-  -iso-level 3 \
-  -volid "NEXUS_OS_1_0" \
-  -appid "Nexus OS 1.0 Agentic AI Linux" \
+# ── Step 12: Build ISO with grub-mkrescue ─────────────────
+# grub-mkrescue automatically:
+#   - embeds GRUB modules (fixes echo.mod / chain.mod not found)
+#   - creates BIOS El Torito boot record
+#   - creates UEFI boot partition
+#   - no manual bios.img / efiboot.img needed
+log "Building nexus.iso with grub-mkrescue..."
+grub-mkrescue \
+  --output="$OUTPUT_ISO" \
+  "$ISO_DIR" \
+  -- \
+  -volid  "NEXUS_OS_1_0" \
+  -appid  "Nexus OS 1.0 Agentic AI Linux" \
   -publisher "Nexus AI Project" \
-  -b bios.img -no-emul-boot -boot-load-size 4 -boot-info-table \
-  -eltorito-alt-boot \
-  -e efiboot.img -no-emul-boot \
-  --protective-msdos-label \
-  -append_partition 2 0xef "$WORK_DIR/efiboot.img" \
-  -o "$OUTPUT_ISO" \
-  "$ISO_DIR"
+  2>&1 | tail -8
 
-[[ ! -f "$OUTPUT_ISO" ]] && die "nexus.iso not created"
-
+# ── Done ─────────────────────────────────────────────────
 echo ""
 ok "BUILD COMPLETE!"
+echo ""
 echo "  ISO    : $OUTPUT_ISO"
 echo "  Size   : $(du -sh $OUTPUT_ISO | cut -f1)"
 echo "  SHA256 : $(sha256sum $OUTPUT_ISO | cut -d' ' -f1)"
 echo ""
 echo "  Flash  : sudo dd if=nexus.iso of=/dev/sdX bs=4M status=progress"
+echo "  QEMU   : make qemu"
