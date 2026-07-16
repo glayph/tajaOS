@@ -1,6 +1,6 @@
 
-  nexus  •  Agentic AI Linux  •  Anthropic Claude
-  ─────────────────────────────────────────────────
+  nexus  •  System Shell
+  ──────────────────────
 
-  Type 'nexus' to launch the AI agent.
+  Type 'nexus' to launch the shell.
 

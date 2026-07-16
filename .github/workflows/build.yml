@@ -37,7 +37,6 @@ jobs:
           body: |
             Download nexus.iso below and flash to USB or boot in a VM.
             Flash: sudo dd if=nexus.iso of=/dev/sdX bs=4M status=progress
-            API key: echo "sk-ant-..." > /etc/nexus/api.key
           files: |
             nexus.iso
             SHA256SUMS

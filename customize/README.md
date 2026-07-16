@@ -25,7 +25,7 @@ Build করার সময় এই package গুলো rootfs-এ automatic
 
 ## 🚀 Custom Startup Script — `startup.sh`
 
-এই script টি প্রতিবার boot হওয়ার পর, Nexus agent চালু হওয়ার আগে run হবে।
+এই script টি প্রতিবার boot হওয়ার পর, Nexus shell চালু হওয়ার আগে run হবে।
 
 ```bash
 #!/bin/bash
@@ -39,18 +39,6 @@ export MY_VAR="hello"
 
 # কোনো message দেখাও
 echo "Custom startup complete!"
-```
-
----
-
-## 🤖 AI Agent Prompt — `agent-prompt.txt`
-
-Nexus AI agent-এর personality এবং behavior customize করতে পারবে।
-এই ফাইলে তোমার custom system prompt লেখো।
-
-```
-You are NEXUS, an AI assistant for [your name]'s custom Linux system.
-[তোমার নিজস্ব instructions যোগ করো]
 ```
 
 ---

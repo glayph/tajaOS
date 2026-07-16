@@ -144,7 +144,6 @@ cat > "$ROOTFS/usr/local/bin/nexus" << 'LAUNCHER'
 #!/bin/bash
 export TERM=linux
 export PYTHONUNBUFFERED=1
-[ -f /etc/nexus/api.key ] && export ANTHROPIC_API_KEY=$(cat /etc/nexus/api.key)
 exec /usr/local/bin/nexus-agent.py
 LAUNCHER
 chmod +x "$ROOTFS/usr/local/bin/nexus"
@@ -163,8 +162,7 @@ NAME="Nexus OS"
 VERSION="1.0"
 ID=nexus
 ID_LIKE=ubuntu
-PRETTY_NAME="Nexus OS 1.0 — Agentic AI Linux"
-NEXUS_AGENT="claude-sonnet-4-6"
+PRETTY_NAME="Nexus OS 1.0"
 BUILD_DATE=$(date +%Y-%m-%d)
 OSREL
 
@@ -187,9 +185,6 @@ PROFILE
 [[ -f "$SCRIPT_DIR/customize/startup.sh" ]] && \
   cp "$SCRIPT_DIR/customize/startup.sh" "$ROOTFS/etc/nexus/startup.sh" && \
   chmod +x "$ROOTFS/etc/nexus/startup.sh"
-
-[[ -f "$SCRIPT_DIR/customize/agent-prompt.txt" ]] && \
-  cp "$SCRIPT_DIR/customize/agent-prompt.txt" "$ROOTFS/etc/nexus/agent-prompt.txt"
 
 # MOTD
 if [[ -f "$SCRIPT_DIR/customize/motd.txt" ]]; then
