@@ -72,6 +72,7 @@ trap "umount '$ROOTFS/proc' '$ROOTFS/sys' '$ROOTFS/dev' 2>/dev/null; umount '$RO
 # ── Step 5: Install packages ───────────────────────────────
 log "Installing packages..."
 chroot "$ROOTFS" /bin/bash -c "
+  set -e
   apt-get update -qq
 
   # linux-image-virtual = smaller kernel, fewer unnecessary modules
@@ -124,7 +125,7 @@ chroot "$ROOTFS" /bin/bash -c "
     pulseaudio \
     wireless-tools \
     iw \
-    wpa_supplicant \
+    wpasupplicant \
     bluez \
     bluez-tools \
     2>&1
