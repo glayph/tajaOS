@@ -4,13 +4,13 @@ on:
   push:
     branches: [main]
     paths:
-      - boot/**
-      - customize/**
-      - makebuild.sh
-      - Makefile
-      - install-deps.sh
-      - nexus-setup.sh
-      - .github/**
+      - 'nexus-agent.py'
+      - 'boot/**'
+      - 'skills/**'
+      - 'bin/**'
+      - 'config/**'
+      - 'customize/**'
+      - 'makebuild.sh'
   workflow_dispatch:
 
 permissions:
@@ -19,39 +19,65 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cache rootfs
-        uses: actions/cache@v4
-        with:
-          path: rootfs
-          key: nexus-rootfs-${{ hashFiles('boot/**', 'customize/**', 'install-deps.sh', 'nexus-setup.sh', 'makebuild.sh') }}
-          restore-keys: |
-            nexus-rootfs-
-
       - name: Install dependencies
         run: sudo bash install-deps.sh
 
-      - name: Build nexus.iso
-        run: sudo bash makebuild.sh
+      - name: Build nexus.iso v1.1
+        run: sudo bash makebuild.sh --output ${{ github.workspace }}
 
-      - name: Show ISO info
+      - name: ISO info
         run: |
           ls -lh nexus.iso
           sha256sum nexus.iso | tee SHA256SUMS
 
-      - name: Upload to GitHub Release
+      - name: Upload to Release v1.1
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: "Nexus OS v1.0.${{ github.run_number }}"
+          tag_name: v1.1
+          name: "Nexus OS v1.1 — Modular Agentic AI Linux"
           body: |
-            Download nexus.iso below and flash to USB or boot in a VM.
-            Flash: sudo dd if=nexus.iso of=/dev/sdX bs=4M status=progress
+            ## 🚀 Nexus OS v1.1
+
+            ### What's New in v1.1
+            - ✅ Pluggable AI provider (Anthropic / OpenAI / Local / External)
+            - ✅ Compatible with OpenClaw, Hermes, and other AI agents
+            - ✅ Plugin/skill system (`/opt/nexus/skills/`)
+            - ✅ 5 built-in skill modules: system, network, security, developer, filesystem
+            - ✅ `nexus-doctor` — full system health check
+            - ✅ `nexus-monitor` — live dashboard (CPU/RAM/Disk/Net)
+            - ✅ `nexus-setup` — first-boot welcome wizard
+            - ✅ `nexus-pkg` — package manager wrapper
+            - ✅ `nexus-skill` — plugin manager
+            - ✅ Memory store for user preferences
+            - ✅ Audit logging for all commands
+            - ✅ Confirm prompt for destructive commands
+            - ✅ Bash auto-completion for nexus commands
+            - ✅ tmux pre-configured (split-pane, mouse mode)
+            - ✅ More aggressive driver removal
+            - ✅ Smaller ISO size (~300-400MB target)
+
+            ### Quick Start
+            ```bash
+            # Flash to USB
+            dd if=nexus.iso of=/dev/sdX bs=4M status=progress
+
+            # After boot
+            nexus           # Launch AI agent
+            nexus-doctor    # Health check
+            nexus-monitor   # Live dashboard
+            ```
+
+            ### Agent Configuration
+            Edit `/etc/nexus/agent.conf` to switch AI provider:
+            ```
+            AGENT_PROVIDER=anthropic   # or openai / local / external
+            ```
           files: |
             nexus.iso
             SHA256SUMS
