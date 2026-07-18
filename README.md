@@ -11,8 +11,8 @@
 
 **TajaOS v2.0 — CLI-Based Operating System**
 
-[![Build](https://github.com/glayph/nexusOS/actions/workflows/build.yml/badge.svg)](https://github.com/glayph/nexusOS/actions/workflows/build.yml)
-[![Release](https://img.shields.io/github/v/release/glayph/nexusOS?color=cyan)](https://github.com/glayph/nexusOS/releases/latest)
+[![Build](https://github.com/glayph/tajaOS/actions/workflows/build.yml/badge.svg)](https://github.com/glayph/tajaOS/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/glayph/tajaOS?color=cyan)](https://github.com/glayph/tajaOS/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 </div>
@@ -21,7 +21,7 @@
 
 ## 📥 Download
 
-**[→ Latest Release: tajaos.iso (280 MB)](https://github.com/glayph/nexusOS/releases/latest)**
+**[→ Latest Release: tajaos.iso (280 MB)](https://github.com/glayph/tajaOS/releases/latest)**
 
 ```bash
 # Flash to USB
@@ -117,8 +117,8 @@ os shell                       # Launch TUI shell menu
 ### Linux / WSL
 
 ```bash
-git clone https://github.com/glayph/nexusOS.git
-cd nexusOS
+git clone https://github.com/glayph/tajaOS.git
+cd tajaOS
 sudo bash install-deps.sh
 make build
 ```
